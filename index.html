@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tupper Plot</title>
+<style>
+  :root { --bg:#fafaf7; --fg:#1d1d1f; --px:#1d1d1f; --off:#ecebe6; --grid:#dcdbd5; --muted:#6b6b6b; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#141414; --fg:#eee; --px:#f2f2f2; --off:#262626; --grid:#333; --muted:#999; } }
+  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  .wrap { max-width:980px; margin:0 auto; }
+  canvas { width:100%; display:block; margin:16px 0 8px; cursor:crosshair; touch-action:none; }
+  textarea { width:100%; box-sizing:border-box; font:13px/1.4 ui-monospace, monospace; padding:8px; background:var(--off); color:var(--fg); border:0; border-radius:6px; }
+  .row { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:center; margin:8px 0; }
+  button { padding:6px 14px; font:inherit; cursor:pointer; }
+  .muted { color:var(--muted); font-size:13px; }
+  #err { color:#c0392b; min-height:1.5em; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tupper's formula</h1>
+  <canvas id="c"></canvas>
+  <div class="row">
+    <button id="clear">Очистить</button>
+    <button id="invert">Инвертировать</button>
+    <label><input type="checkbox" id="flip"> Повернуть на 180°</label>
+  </div>
+  <p class="muted">Рисуйте мышкой или пальцем прямо на поле: клик по пустой клетке закрашивает, по закрашенной — стирает. Число k ниже обновляется сразу.</p>
+  <div id="err"></div>
+  <textarea id="k" rows="5" placeholder="k"></textarea>
+  <div class="row">
+    <button id="go">Нарисовать по числу</button>
+    <button id="copy">Скопировать k</button>
+    <button id="link">Скопировать ссылку</button>
+    <span id="msg" class="muted"></span>
+  </div>
+  <p class="muted">Число можно передать в адресе: <code>?k=ЧИСЛО</code> или <code>#k=ЧИСЛО</code>; <code>&amp;flip=1</code> — для чисел из генераторов с перевёрнутыми осями. Без параметра рисуется сама формула.</p>
+</div>
+<script>
+const SELF = "4858450636189713423582095962494202044581400587983244549483093085061934704708809928450644769865524364849997247024915119110411605739177407856919754326571855442057210445735883681829823754139634338225199452191651284348332905131193199953502413758765239264874613394906870130562295813219481113685339535565290850023875092856892694555974281546386510730049106723058933586052544096664351265349363643957125565695936815184334857605266940161251266951421550539554519153785457525756590740540157929001765967965480064427829131488548259914721248506352686630476300";
+const W = 106, H = 17, S = 20;
+const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const ta = document.getElementById('k'), err = document.getElementById('err'), msg = document.getElementById('msg');
+const flipBox = document.getElementById('flip');
+cv.width = W * S; cv.height = H * S;
+
+// bits[x][y] — в координатах формулы (x вправо, y вверх, y = 0..16 внутри полосы)
+let bits = Array.from({ length: W }, () => new Uint8Array(H));
+
+function param(name) {
+  return new URLSearchParams(location.search).get(name) || new URLSearchParams(location.hash.slice(1)).get(name);
+}
+
+// экранная клетка (столбец c, строка r сверху) <-> (x, y) формулы
+function toXY(c, r) { return flipBox.checked ? [W - 1 - c, r] : [c, H - 1 - r]; }
+
+function render() {
+  const css = getComputedStyle(document.documentElement);
+  ctx.fillStyle = css.getPropertyValue('--off'); ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.fillStyle = css.getPropertyValue('--grid');
+  for (let c = 1; c < W; c++) ctx.fillRect(c * S, 0, 1, cv.height);
+  for (let r = 1; r < H; r++) ctx.fillRect(0, r * S, cv.width, 1);
+  ctx.fillStyle = css.getPropertyValue('--px');
+  for (let c = 0; c < W; c++)
+    for (let r = 0; r < H; r++) {
+      const [x, y] = toXY(c, r);
+      if (bits[x][y]) ctx.fillRect(c * S, r * S, S, S);
+    }
+}
+
+function bitsToK() {
+  // n = сумма 2^(17x + y); k = 17n. Строим двоичную строку от старшего бита к младшему.
+  let s = '';
+  for (let x = W - 1; x >= 0; x--)
+    for (let y = H - 1; y >= 0; y--) s += bits[x][y] ? '1' : '0';
+  return (17n * BigInt('0b' + s)).toString();
+}
+
+function kToBits(digits) {
+  const n = BigInt(digits) / 17n;
+  const bin = n.toString(2).padStart(W * H, '0').slice(-W * H);
+  for (let x = 0; x < W; x++)
+    for (let y = 0; y < H; y++) bits[x][y] = bin[bin.length - 1 - (17 * x + y)] === '1' ? 1 : 0;
+}
+
+function syncText() { ta.value = bitsToK(); err.textContent = ''; }
+
+function loadNumber(str) {
+  err.textContent = '';
+  const digits = str.replace(/[^0-9]/g, '');
+  if (!digits) { err.textContent = 'Нужно целое неотрицательное число.'; return; }
+  kToBits(digits);
+  render();
+  const n = BigInt(digits) / 17n;
+  if (17n * n !== BigInt(digits)) err.textContent = 'Внимание: k не кратно 17 — картинка взята из ⌊k/17⌋.';
+  else if (n >> BigInt(W * H)) err.textContent = 'Внимание: число длиннее 106×17 бит — лишние старшие биты отброшены.';
+}
+
+function updateUrl() {
+  try {
+    if (location.protocol.startsWith('http') || location.protocol === 'file:')
+      history.replaceState(null, '', '?k=' + ta.value + (flipBox.checked ? '&flip=1' : ''));
+  } catch (e) { /* превью/песочница — адрес менять нельзя */ }
+}
+
+// --- рисование ---
+let painting = false, paintValue = 1;
+function cellAt(ev) {
+  const rect = cv.getBoundingClientRect();
+  const c = Math.floor((ev.clientX - rect.left) / rect.width * W);
+  const r = Math.floor((ev.clientY - rect.top) / rect.height * H);
+  return (c >= 0 && c < W && r >= 0 && r < H) ? toXY(c, r) : null;
+}
+cv.addEventListener('pointerdown', ev => {
+  const p = cellAt(ev); if (!p) return;
+  painting = true;
+  paintValue = bits[p[0]][p[1]] ? 0 : 1;   // первый клик определяет: рисуем или стираем
+  bits[p[0]][p[1]] = paintValue;
+  try { cv.setPointerCapture(ev.pointerId); } catch (e) {}
+  render(); syncText();
+});
+cv.addEventListener('pointermove', ev => {
+  if (!painting) return;
+  const p = cellAt(ev); if (!p || bits[p[0]][p[1]] === paintValue) return;
+  bits[p[0]][p[1]] = paintValue;
+  render(); syncText();
+});
+const stop = () => { if (painting) { painting = false; updateUrl(); } };
+cv.addEventListener('pointerup', stop);
+cv.addEventListener('pointercancel', stop);
+
+// --- кнопки ---
+document.getElementById('clear').onclick = () => { bits.forEach(col => col.fill(0)); render(); syncText(); updateUrl(); };
+document.getElementById('invert').onclick = () => { bits.forEach(col => col.forEach((v, i) => col[i] = v ? 0 : 1)); render(); syncText(); updateUrl(); };
+document.getElementById('go').onclick = () => { loadNumber(ta.value); ta.value = ta.value.replace(/[^0-9]/g, ''); updateUrl(); };
+flipBox.onchange = () => { render(); updateUrl(); };
+
+function flash(t) { msg.textContent = t; setTimeout(() => msg.textContent = '', 1500); }
+async function copy(text) {
+  try { await navigator.clipboard.writeText(text); flash('Скопировано'); }
+  catch (e) { ta.select(); try { document.execCommand('copy'); flash('Скопировано'); } catch (e2) { flash('Не удалось скопировать'); } }
+}
+document.getElementById('copy').onclick = () => copy(ta.value);
+document.getElementById('link').onclick = () => {
+  const base = location.protocol === 'about:' ? 'tupper.html' : location.href.split(/[?#]/)[0];
+  copy(base + '?k=' + ta.value + (flipBox.checked ? '&flip=1' : ''));
+};
+
+// --- старт ---
+flipBox.checked = param('flip') === '1';
+const k0 = (param('k') || SELF).replace(/[^0-9]/g, '');
+ta.value = k0; loadNumber(k0);
+window.addEventListener('hashchange', () => { const k = (param('k') || SELF).replace(/[^0-9]/g, ''); ta.value = k; loadNumber(k); });
+</script>
+</body>
+</html>
